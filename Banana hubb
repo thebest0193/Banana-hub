@@ -1,0 +1,476 @@
+local Players         = game:GetService("Players")
+local RunService      = game:GetService("RunService")
+local UIS             = game:GetService("UserInputService")
+local TweenService    = game:GetService("TweenService")
+local HttpService      = game:GetService("HttpService")
+local ContentProvider = game:GetService("ContentProvider")
+local Stats           = game:GetService("Stats")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextChatService = game:GetService("TextChatService")
+local LP              = Players.LocalPlayer
+
+local LOGO_ID = "rbxassetid://96255128725816"
+task.spawn(function() pcall(function() ContentProvider:PreloadAsync({LOGO_ID}) end) end)
+
+local _isfile   = isfile   or (syn and syn.isfile)   or (getgenv and getgenv().isfile)   or function() return false end
+local _readfile = readfile  or (syn and syn.readfile)  or (getgenv and getgenv().readfile)  or function() return nil  end
+local _writefile= writefile or (syn and syn.writefile) or (getgenv and getgenv().writefile) or function() end
+local getconnections = getconnections or get_signal_cons or getconnects or (syn and syn.get_signal_cons)
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local State = {
+    normalSpeed=60, carrySpeed=30, laggerSpeed=10.1,
+    speedToggled=false, laggerEnabled=false,
+    infJumpEnabled=false, antiRagdollEnabled=false, fpsBoostEnabled=false,
+    guiVisible=true, uiLocked=false,
+    isStealing=false, stealStartTime=nil, lastStealTick=0,
+    autoLeftEnabled=false, autoRightEnabled=false,
+    autoLeftPhase=1, autoRightPhase=1,
+    medusaLastUsed=0, medusaDebounce=false, medusaCounterEnabled=false,
+    batAimbotToggled=false, autoSwingEnabled=false,
+    hittingCooldown=false,
+    batCounterEnabled=false, batCounterDebounce=false,
+    dropEnabled=false, _tpInProgress=false,
+    lastMoveDir=Vector3.new(0,0,0),
+    unwalkEnabled=false, stackButtonsHidden=false,
+    _prevCarry=30, _prevSpeed=false,
+}
+
+local Keys = {
+    speed=Enum.KeyCode.Q, guiHide=Enum.KeyCode.LeftControl,
+    autoLeft=Enum.KeyCode.L, autoRight=Enum.KeyCode.R,
+    lagger=Enum.KeyCode.Unknown, tpDown=Enum.KeyCode.Unknown,
+    drop=Enum.KeyCode.H, aimbot=Enum.KeyCode.Unknown,
+}
+
+local BTN_W=58; local BTN_H=48; local BTN_GAP=4; local COLS=2
+local stackDefs = {
+    {key="autoLeft",   label="AUTO\nLEFT"},
+    {key="autoRight",  label="AUTO\nRIGHT"},
+    {key="aimbot",     label="AIMBOT"},
+    {key="lagger",     label="LAGGER"},
+    {key="drop",       label="DROP\nBR"},
+    {key="tpDown",     label="TP\nDOWN"},
+    {key="carrySpeed", label="CARRY\nSPEED"},
+}
+local GRID_W=COLS*(BTN_W+BTN_GAP)-BTN_GAP
+local GRID_H=math.ceil(#stackDefs/COLS)*(BTN_H+BTN_GAP)-BTN_GAP
+
+local function getDefaultStackPos(i)
+    local col=(i-1)%COLS
+    local row2=math.floor((i-1)/COLS)
+    return UDim2.new(1,-(GRID_W+12)+col*(BTN_W+BTN_GAP),0.5,-(GRID_H/2)+row2*(BTN_H+BTN_GAP))
+end
+
+local Steal = {
+    AutoStealEnabled=false, StealRadius=20, StealDuration=0.25,
+    Data={}, plotCache={}, plotCacheTime={}, cachedPrompts={}, promptCacheTime=0,
+}
+
+local CONFIG_FILE = "BananaHubConfig.json"
+
+local MOVE_KEYS={[Enum.KeyCode.W]=true,[Enum.KeyCode.A]=true,[Enum.KeyCode.S]=true,[Enum.KeyCode.D]=true,
+    [Enum.KeyCode.Up]=true,[Enum.KeyCode.Left]=true,[Enum.KeyCode.Down]=true,[Enum.KeyCode.Right]=true}
+
+local PLOT_CACHE_DURATION=2; local PROMPT_CACHE_REFRESH=0.15
+local STEAL_COOLDOWN=0.1; local MEDUSA_COOLDOWN=25; local DROP_AUTO_OFF_DELAY=0.15
+
+local POS={
+    L1=Vector3.new(-476.48,-6.28,92.73), L2=Vector3.new(-483.12,-4.95,94.80),
+    R1=Vector3.new(-476.16,-6.52,25.62), R2=Vector3.new(-483.04,-5.09,23.14),
+}
+
+local Conns={autoSteal=nil,antiRag=nil,autoLeft=nil,autoRight=nil,aimbot=nil,anchor={},progress=nil,batCounter=nil,unwalk=nil}
+
+local h,hrp
+local setAutoLeft,setAutoRight,setInfJump,setAntiRag,setFps
+local setMedusaCounter,setUnwalkToggle,setAimbot,setAutoSwing
+local setLagger,setDropBrainrot,setInstaGrab
+local setupMedusaCounter,stopMedusaCounter,startAntiRagdoll,stopAntiRagdoll
+local applyFPSBoost,startAutoSteal,stopAutoSteal
+local startAutoLeft,stopAutoLeft,startAutoRight,stopAutoRight
+local saveConfig,loadConfig,runDropBrainrot,stopDropBrainrot,doTpDown
+local startBatAimbot,stopBatAimbot,startBatCounter,stopBatCounter,setBatCounter
+local stackBtnRefs={}; local stackWrappers={}; local keybindBtnRefs={}
+local normalBox,carryBox,laggerBox,uiScaleBox,stealRadBox,lockBtn
+local setHideButtonsToggle; local radTB
+
+-- ============================================================
+-- COLORS â€” BLACK & PURPLE
+-- ============================================================
+local PURPLE       = Color3.fromRGB(147, 51, 234)
+local PURPLE_LT    = Color3.fromRGB(192, 132, 252)
+local PURPLE_DK    = Color3.fromRGB(88, 28, 135)
+local PURPLE_VDK   = Color3.fromRGB(49, 10, 80)
+local PURPLE_DIM   = Color3.fromRGB(75, 25, 130)
+local PURPLE_BRD   = Color3.fromRGB(90, 30, 150)
+local PURPLE_BG    = Color3.fromRGB(25, 10, 50)
+local PURPLE_BG2   = Color3.fromRGB(20, 5, 40)
+local PURPLE_MIDBG = Color3.fromRGB(35, 15, 65)
+local PURPLE_GLOW  = Color3.fromRGB(180, 100, 255)
+local BLK        = Color3.fromRGB(8, 8, 8)
+local BLK2       = Color3.fromRGB(12, 12, 12)
+local BLK3       = Color3.fromRGB(16, 16, 16)
+local BLK4       = Color3.fromRGB(20, 20, 20)
+local BLK5       = Color3.fromRGB(26, 26, 26)
+local GRAY_D     = Color3.fromRGB(55, 55, 55)
+local GRAY_M     = Color3.fromRGB(85, 85, 85)
+local GRAY_L     = Color3.fromRGB(125, 125, 125)
+local GRAY_XL    = Color3.fromRGB(175, 175, 175)
+local WHITE      = Color3.fromRGB(225, 225, 225)
+local RED_SOFT   = Color3.fromRGB(220, 60, 60)
+local GREEN_SOFT = Color3.fromRGB(60, 200, 100)
+
+local C = {
+    winBg=BLK2, winBorder=PURPLE_BRD,
+    topBg=BLK2, topTitle=PURPLE, topSub=GRAY_D,
+    topBtn=PURPLE_DK, topBtnHov=PURPLE_LT, topDivider=PURPLE_BG,
+    tabBarBg=BLK3, tabBarDiv=PURPLE_BG,
+    tabIdle=GRAY_D, tabActive=PURPLE, tabActiveBg=PURPLE_BG2, tabUnderline=PURPLE,
+    sectionTxt=PURPLE_DK, sectionDiv=PURPLE_BG,
+    rowBg=BLK, rowBorder=Color3.fromRGB(25,25,25), rowLabel=WHITE,
+    rowSub=GRAY_D, rowValue=GRAY_L, rowHov=PURPLE_BG2,
+    inputBg=BLK4, inputBorder=PURPLE_BRD, inputFocus=PURPLE, inputTxt=WHITE,
+    pillOff=BLK5, pillOn=PURPLE_DIM, dotOff=GRAY_D, dotOn=PURPLE_GLOW, pillBorder=PURPLE_BRD,
+    modeBtnBg=BLK4, modeBtnBrd=PURPLE_BRD, modeBtnTxt=GRAY_D,
+    modeBtnActBg=PURPLE_VDK, modeBtnActTx=PURPLE_GLOW,
+    chipBg=BLK4, chipBorder=PURPLE_BRD, chipTxt=GRAY_D,
+    btnBg=BLK5, btnBorder=PURPLE_BRD, btnTxt=GRAY_L, btnHov=PURPLE_MIDBG,
+    stackBg=Color3.fromRGB(10,10,10), stackBrd=PURPLE_BRD,
+    stackTxt=GRAY_D, stackActBg=PURPLE_BG2, stackActBrd=PURPLE,
+    stackActTxt=PURPLE_GLOW, stackDot=PURPLE_VDK, stackDotOn=PURPLE_GLOW,
+    infoBg=BLK, infoBrd=PURPLE_BRD, infoTxt=GRAY_D, infoVal=PURPLE, infoFill=PURPLE,
+    accent=PURPLE, accentDim=PURPLE_DIM, lockOn=PURPLE, divider=PURPLE_BG,
+}
+
+-- ============================================================
+-- CLEANUP
+-- ============================================================
+for _,name in pairs({"VyseSlottedGUI","VyseAsireGUI","VyseAsireHubV4","VyseAsireHubV5","VyseAsireHubV5_1","AsireHubV5_1","AsireHubV5_2","CookHubV1","SpinkHubV1","SkyHubV1","BananaHubV1"}) do
+    pcall(function() local o=game:GetService("CoreGui"):FindFirstChild(name); if o then o:Destroy() end end)
+    pcall(function() local o=LP:WaitForChild("PlayerGui"):FindFirstChild(name); if o then o:Destroy() end end)
+end
+
+-- ============================================================
+-- ROOT GUI
+-- ============================================================
+local gui=Instance.new("ScreenGui")
+gui.Name="BananaHubV1"; gui.ResetOnSpawn=false; gui.DisplayOrder=10
+gui.IgnoreGuiInset=true; gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+gui.Parent=LP:WaitForChild("PlayerGui")
+
+local uiScaleObj=Instance.new("UIScale",gui); uiScaleObj.Scale=1.0
+
+-- ============================================================
+-- HELPERS
+-- ============================================================
+local function mkCorner(p,r) local c=Instance.new("UICorner",p); c.CornerRadius=UDim.new(0,r or 6); return c end
+local function mkStroke(p,col,th)
+    local s=Instance.new("UIStroke",p); s.Color=col; s.Thickness=th or 1
+    s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border; return s
+end
+
+-- ============================================================
+-- DRAG
+-- ============================================================
+local function makeDraggable(frame,handle)
+    local src=handle or frame
+    local dragging,dragInput,dragStart,startPos=false,nil,nil,nil
+    src.InputBegan:Connect(function(inp)
+        if State.uiLocked then return end
+        if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
+            dragging=true; dragStart=inp.Position; startPos=frame.Position
+            inp.Changed:Connect(function() if inp.UserInputState==Enum.UserInputState.End then dragging=false end end)
+        end
+    end)
+    src.InputChanged:Connect(function(inp)
+        if inp.UserInputType==Enum.UserInputType.MouseMovement or inp.UserInputType==Enum.UserInputType.Touch then dragInput=inp end
+    end)
+    UIS.InputChanged:Connect(function(inp)
+        if inp==dragInput and dragging and not State.uiLocked then
+            local dx=inp.Position.X-dragStart.X; local dy=inp.Position.Y-dragStart.Y
+            frame.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+dx,startPos.Y.Scale,startPos.Y.Offset+dy)
+        end
+    end)
+end
+
+local function makeStackDraggable(frame,onTap)
+    local dragging,dragInput,dragStart,startPos=false,nil,nil,nil; local moved=false
+    frame.InputBegan:Connect(function(inp)
+        if inp.UserInputType~=Enum.UserInputType.MouseButton1 and inp.UserInputType~=Enum.UserInputType.Touch then return end
+        dragging=true; moved=false; dragStart=inp.Position; startPos=frame.Position
+        inp.Changed:Connect(function()
+            if inp.UserInputState==Enum.UserInputState.End then
+                if not moved and onTap then onTap() end; dragging=false; moved=false
+            end
+        end)
+    end)
+    frame.InputChanged:Connect(function(inp)
+        if inp.UserInputType==Enum.UserInputType.MouseMovement or inp.UserInputType==Enum.UserInputType.Touch then dragInput=inp end
+    end)
+    UIS.InputChanged:Connect(function(inp)
+        if inp~=dragInput or not dragging then return end
+        local dx=inp.Position.X-dragStart.X; local dy=inp.Position.Y-dragStart.Y
+        if math.abs(dx)>4 or math.abs(dy)>4 then moved=true end
+        if moved and not State.uiLocked then
+            frame.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+dx,startPos.Y.Scale,startPos.Y.Offset+dy)
+        end
+    end)
+end
+
+-- ============================================================
+-- MAIN WINDOW
+-- ============================================================
+local WIN_W=220; local WIN_H=330; local TITLE_H=28; local TAB_H=24
+
+local mainOuter = Instance.new("Frame", gui)
+mainOuter.Name="MainOuter"; mainOuter.Size=UDim2.new(0,WIN_W,0,WIN_H)
+mainOuter.Position=UDim2.new(0.5,-WIN_W/2,0.5,-WIN_H/2)
+mainOuter.BackgroundColor3=BLK2; mainOuter.BackgroundTransparency=0
+mainOuter.BorderSizePixel=0; mainOuter.ClipsDescendants=true
+mkCorner(mainOuter,10); mkStroke(mainOuter, PURPLE_BRD, 1.5)
+makeDraggable(mainOuter)
+
+-- Glow layer
+local glowFrame = Instance.new("Frame", mainOuter)
+glowFrame.Size = UDim2.new(1, 4, 1, 4); glowFrame.Position = UDim2.new(0, -2, 0, -2)
+glowFrame.BackgroundColor3 = PURPLE_VDK; glowFrame.BackgroundTransparency = 0.6
+glowFrame.BorderSizePixel = 0; glowFrame.ZIndex = 0
+mkCorner(glowFrame, 12)
+
+-- ============================================================
+-- TITLE BAR
+-- ============================================================
+local titleBar = Instance.new("Frame", mainOuter)
+titleBar.Size=UDim2.new(1,0,0,TITLE_H); titleBar.BackgroundColor3=BLK3
+titleBar.BackgroundTransparency=0; titleBar.BorderSizePixel=0; titleBar.ZIndex=5
+mkCorner(titleBar,10)
+
+local logoBg = Instance.new("ImageLabel", titleBar)
+logoBg.Size=UDim2.new(0,18,0,18); logoBg.Position=UDim2.new(0,8,0.5,-9)
+logoBg.BackgroundTransparency=1; logoBg.Image=LOGO_ID; logoBg.ScaleType=Enum.ScaleType.Fit; logoBg.ZIndex=6
+local tint = Instance.new("ImageLabel", logoBg)
+tint.Size=UDim2.new(1,0,1,0); tint.Position=UDim2.new(0,0,0,0)
+tint.BackgroundTransparency=1; tint.ImageColor3=PURPLE
+tint.Image="rbxassetid://4167816828"; tint.ScaleType=Enum.ScaleType.Slice
+tint.SliceCenter=Rect.new(0,0,0,0); tint.ZIndex=7
+
+local titleLbl = Instance.new("TextLabel", titleBar)
+titleLbl.Size=UDim2.new(0,80,1,0); titleLbl.Position=UDim2.new(0,30,0,0)
+titleLbl.BackgroundTransparency=1; titleLbl.Text="BANANA HUB"
+titleLbl.TextColor3=PURPLE_GLOW; titleLbl.Font=Enum.Font.GothamBlack
+titleLbl.TextSize=13; titleLbl.TextXAlignment=Enum.TextXAlignment.Left; titleLbl.ZIndex=6
+
+local verLbl = Instance.new("TextLabel", titleBar)
+verLbl.Size=UDim2.new(0,30,1,0); verLbl.Position=UDim2.new(1,-58,0,0)
+verLbl.BackgroundTransparency=1; verLbl.Text="v1.0"
+verLbl.TextColor3=GRAY_D; verLbl.Font=Enum.Font.Gotham; verLbl.TextSize=8
+verLbl.TextXAlignment=Enum.TextXAlignment.Right; verLbl.ZIndex=6
+
+local closeBtn = Instance.new("TextButton", titleBar)
+closeBtn.Size=UDim2.new(0,20,0,20); closeBtn.Position=UDim2.new(1,-26,0.5,-10)
+closeBtn.BackgroundColor3=BLK5; closeBtn.BorderSizePixel=0; closeBtn.Text="Ã—"
+closeBtn.TextColor3=GRAY_M; closeBtn.Font=Enum.Font.GothamBlack; closeBtn.TextSize=14; closeBtn.ZIndex=7
+mkCorner(closeBtn,5); mkStroke(closeBtn, PURPLE_BRD, 1)
+closeBtn.MouseEnter:Connect(function() TweenService:Create(closeBtn,TweenInfo.new(0.15),{BackgroundColor3=Color3.fromRGB(60,15,15),TextColor3=RED_SOFT}):Play() end)
+closeBtn.MouseLeave:Connect(function() TweenService:Create(closeBtn,TweenInfo.new(0.15),{BackgroundColor3=BLK5,TextColor3=GRAY_M}):Play() end)
+closeBtn.MouseButton1Click:Connect(function() State.guiVisible=false; mainOuter.Visible=false end)
+
+lockBtn = Instance.new("TextButton", titleBar)
+lockBtn.Size=UDim2.new(0,20,0,20); lockBtn.Position=UDim2.new(1,-48,0.5,-10)
+lockBtn.BackgroundColor3=BLK5; lockBtn.BorderSizePixel=0; lockBtn.Text="ðŸ”“"
+lockBtn.Font=Enum.Font.GothamBold; lockBtn.TextSize=10; lockBtn.ZIndex=7
+mkCorner(lockBtn,5); mkStroke(lockBtn, PURPLE_BRD, 1)
+lockBtn.MouseButton1Click:Connect(function()
+    State.uiLocked=not State.uiLocked; lockBtn.Text=State.uiLocked and "ðŸ”’" or "ðŸ”“"
+end)
+
+-- ============================================================
+-- TAB BAR
+-- ============================================================
+local tabBar = Instance.new("Frame", mainOuter)
+tabBar.Size=UDim2.new(1,0,0,TAB_H); tabBar.Position=UDim2.new(0,0,0,TITLE_H)
+tabBar.BackgroundColor3=BLK3; tabBar.BackgroundTransparency=0; tabBar.BorderSizePixel=0; tabBar.ZIndex=5
+
+local tabBarLL = Instance.new("UIListLayout", tabBar)
+tabBarLL.FillDirection=Enum.FillDirection.Horizontal
+tabBarLL.SortOrder=Enum.SortOrder.LayoutOrder; tabBarLL.Padding=UDim.new(0,0)
+
+local tabDiv = Instance.new("Frame", mainOuter)
+tabDiv.Size=UDim2.new(1,0,0,1); tabDiv.Position=UDim2.new(0,0,0,TITLE_H+TAB_H)
+tabDiv.BackgroundColor3=PURPLE_BG; tabDiv.BorderSizePixel=0; tabDiv.ZIndex=5
+
+-- ============================================================
+-- CONTENT
+-- ============================================================
+local CONTENT_Y=TITLE_H+TAB_H+1
+local contentBg = Instance.new("Frame", mainOuter)
+contentBg.Size=UDim2.new(1,0,1,-CONTENT_Y); contentBg.Position=UDim2.new(0,0,0,CONTENT_Y)
+contentBg.BackgroundColor3=BLK2; contentBg.BackgroundTransparency=0
+contentBg.BorderSizePixel=0; contentBg.ClipsDescendants=true; contentBg.ZIndex=2
+
+-- ============================================================
+-- TAB SYSTEM
+-- ============================================================
+local TABS={"Speed","Aimbot","Mech","Move","Config"}
+local currentTab="Speed"; local tabBtns={}; local tabPages={}
+
+for i,name in ipairs(TABS) do
+    local btn=Instance.new("TextButton",tabBar)
+    btn.Size=UDim2.new(1/#TABS,0,1,0); btn.BackgroundColor3=BLK3
+    btn.BackgroundTransparency=0; btn.BorderSizePixel=0; btn.Text=name
+    btn.TextColor3=(name==currentTab) and PURPLE_GLOW or GRAY_D
+    btn.Font=Enum.Font.GothamBold; btn.TextSize=9; btn.ZIndex=6; btn.LayoutOrder=i
+    local underline=Instance.new("Frame",btn)
+    underline.Size=UDim2.new(0.6,0,0,2); underline.Position=UDim2.new(0.2,0,1,-2)
+    underline.BackgroundColor3=PURPLE_GLOW; underline.BorderSizePixel=0
+    underline.Visible=(name==currentTab); underline.ZIndex=7; mkCorner(underline,1)
+    tabBtns[name]={btn=btn,underline=underline}
+    btn.MouseEnter:Connect(function() if name~=currentTab then TweenService:Create(btn,TweenInfo.new(0.12),{TextColor3=PURPLE_LT}):Play() end end)
+    btn.MouseLeave:Connect(function() if name~=currentTab then TweenService:Create(btn,TweenInfo.new(0.12),{TextColor3=GRAY_D}):Play() end end)
+    btn.MouseButton1Click:Connect(function()
+        currentTab=name
+        for _,n in ipairs(TABS) do
+            local t=tabBtns[n]; local a=(n==name)
+            TweenService:Create(t.btn,TweenInfo.new(0.15),{TextColor3=a and PURPLE_GLOW or GRAY_D,BackgroundColor3=a and PURPLE_BG2 or BLK3}):Play()
+            t.underline.Visible=a
+            if tabPages[n] then tabPages[n].Visible=a end
+        end
+    end)
+end
+
+-- ============================================================
+-- ROW BUILDERS
+-- ============================================================
+local currentPage=nil; local lo=0
+local function LO() lo=lo+1; return lo end
+
+local function makeGap(px)
+    local f=Instance.new("Frame",currentPage); f.Size=UDim2.new(1,0,0,px or 2)
+    f.BackgroundTransparency=1; f.BorderSizePixel=0; f.LayoutOrder=LO()
+end
+
+local function makeSectionHeader(label)
+    local w=Instance.new("Frame",currentPage); w.Size=UDim2.new(1,0,0,16)
+    w.BackgroundTransparency=1; w.BorderSizePixel=0; w.LayoutOrder=LO()
+    local l=Instance.new("TextLabel",w); l.Size=UDim2.new(1,-16,1,0); l.Position=UDim2.new(0,8,0,0)
+    l.BackgroundTransparency=1; l.Text=label and label:upper() or ""
+    l.TextColor3=PURPLE_DK; l.Font=Enum.Font.GothamBold; l.TextSize=8
+    l.TextXAlignment=Enum.TextXAlignment.Left
+end
+
+local function makeInputRow(label,default,onChange)
+    local row=Instance.new("Frame",currentPage); row.Size=UDim2.new(1,0,0,28)
+    row.BackgroundTransparency=0; row.BackgroundColor3=BLK
+    row.BorderSizePixel=0; row.LayoutOrder=LO(); mkCorner(row,6)
+    local lbl=Instance.new("TextLabel",row); lbl.Size=UDim2.new(1,-66,1,0); lbl.Position=UDim2.new(0,10,0,0)
+    lbl.BackgroundTransparency=1; lbl.Text=label; lbl.TextColor3=WHITE
+    lbl.Font=Enum.Font.GothamBold; lbl.TextSize=10; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    local bw=Instance.new("Frame",row); bw.Size=UDim2.new(0,50,0,20); bw.Position=UDim2.new(1,-58,0.5,-10)
+    bw.BackgroundColor3=BLK4; bw.BorderSizePixel=0; mkCorner(bw,5)
+    local bs=mkStroke(bw,PURPLE_BRD,1)
+    local box=Instance.new("TextBox",bw); box.Size=UDim2.new(1,-6,1,0); box.Position=UDim2.new(0,3,0,0)
+    box.BackgroundTransparency=1; box.Text=tostring(default); box.TextColor3=WHITE
+    box.Font=Enum.Font.GothamBold; box.TextSize=10; box.ClearTextOnFocus=false; box.ZIndex=8
+    box.TextXAlignment=Enum.TextXAlignment.Center
+    box.Focused:Connect(function() TweenService:Create(bs,TweenInfo.new(0.15),{Color=PURPLE}):Play() end)
+    box.FocusLost:Connect(function()
+        TweenService:Create(bs,TweenInfo.new(0.15),{Color=PURPLE_BRD}):Play()
+        if onChange then local n=tonumber(box.Text); if n then onChange(n) else box.Text=tostring(default) end end
+    end)
+    return box,row
+end
+
+local function makeToggleRow(label,defaultOn,onToggle)
+    local row=Instance.new("Frame",currentPage); row.Size=UDim2.new(1,0,0,28)
+    row.BackgroundTransparency=0; row.BackgroundColor3=BLK
+    row.BorderSizePixel=0; row.LayoutOrder=LO(); mkCorner(row,6)
+    local lbl=Instance.new("TextLabel",row); lbl.Size=UDim2.new(1,-48,1,0); lbl.Position=UDim2.new(0,10,0,0)
+    lbl.BackgroundTransparency=1; lbl.Text=label; lbl.TextColor3=WHITE
+    lbl.Font=Enum.Font.GothamBold; lbl.TextSize=10; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    local pillBg=Instance.new("Frame",row); pillBg.Size=UDim2.new(0,32,0,16)
+    pillBg.Position=UDim2.new(1,-40,0.5,-8); pillBg.BackgroundColor3=defaultOn and PURPLE_DIM or BLK5
+    pillBg.BorderSizePixel=0; pillBg.ZIndex=7; mkCorner(pillBg,8); mkStroke(pillBg,PURPLE_BRD,1)
+    local dot=Instance.new("Frame",pillBg); dot.Size=UDim2.new(0,10,0,10)
+    dot.Position=defaultOn and UDim2.new(1,-14,0.5,-5) or UDim2.new(0,4,0.5,-5)
+    dot.BackgroundColor3=defaultOn and PURPLE_GLOW or GRAY_D
+    dot.BorderSizePixel=0; dot.ZIndex=8; mkCorner(dot,5)
+    local isOn=defaultOn or false
+    local function setV(on)
+        isOn=on
+        TweenService:Create(pillBg,TweenInfo.new(0.2,Enum.EasingStyle.Quad),{BackgroundColor3=on and PURPLE_DIM or BLK5}):Play()
+        TweenService:Create(dot,TweenInfo.new(0.2,Enum.EasingStyle.Back),{
+            Position=on and UDim2.new(1,-14,0.5,-5) or UDim2.new(0,4,0.5,-5),
+            BackgroundColor3=on and PURPLE_GLOW or GRAY_D
+        }):Play()
+    end
+    local function toggle() isOn=not isOn; setV(isOn); if onToggle then pcall(onToggle,isOn) end end
+    local clk=Instance.new("TextButton",row); clk.Size=UDim2.new(1,0,1,0); clk.BackgroundTransparency=1
+    clk.Text=""; clk.ZIndex=5; clk.BorderSizePixel=0; clk.MouseButton1Click:Connect(toggle)
+    return setV
+end
+
+local function getKeyDisplayName(kc)
+    local n=kc.Name
+    local gp={ButtonA="A",ButtonB="B",ButtonX="X",ButtonY="Y",ButtonL1="LB",ButtonL2="LT",
+        ButtonL3="LS",ButtonR1="RB",ButtonR2="RT",ButtonR3="RS",DPadUp="Dâ†‘",DPadDown="Dâ†“"}
+    if gp[n] then return gp[n] end; return n:sub(1,5)
+end
+
+local function makeKeybindRow(label,currentKey,onChanged,keyName)
+    local row=Instance.new("Frame",currentPage); row.Size=UDim2.new(1,0,0,28)
+    row.BackgroundTransparency=0; row.BackgroundColor3=BLK
+    row.BorderSizePixel=0; row.LayoutOrder=LO(); mkCorner(row,6)
+    local lbl=Instance.new("TextLabel",row); lbl.Size=UDim2.new(1,-58,1,0); lbl.Position=UDim2.new(0,10,0,0)
+    lbl.BackgroundTransparency=1; lbl.Text=label; lbl.TextColor3=WHITE
+    lbl.Font=Enum.Font.GothamBold; lbl.TextSize=10; lbl.TextXAlignment=Enum.TextXAlignment.Left
+    local kbtn=Instance.new("TextButton",row); kbtn.Size=UDim2.new(0,40,0,18)
+    kbtn.Position=UDim2.new(1,-48,0.5,-9); kbtn.BackgroundColor3=BLK4; kbtn.BorderSizePixel=0
+    kbtn.Text=getKeyDisplayName(currentKey); kbtn.TextColor3=GRAY_L
+    kbtn.Font=Enum.Font.GothamBold; kbtn.TextSize=8; kbtn.ZIndex=8
+    mkCorner(kbtn,5); local ks=mkStroke(kbtn,PURPLE_BRD,1)
+    local listening=false; local lconnK=nil; local lconnG=nil
+    local function stopL(key)
+        listening=false
+        if lconnK then lconnK:Disconnect(); lconnK=nil end
+        if lconnG then lconnG:Disconnect(); lconnG=nil end
+        TweenService:Create(ks,TweenInfo.new(0.12),{Color=PURPLE_BRD}):Play(); kbtn.TextColor3=GRAY_L
+        if key then kbtn.Text=getKeyDisplayName(key); if onChanged then onChanged(key) end
+            task.spawn(function() if saveConfig then pcall(saveConfig) end end) end
+    end
+    kbtn.MouseButton1Click:Connect(function()
+        if listening then stopL(nil); return end
+        listening=true; kbtn.Text="Â·Â·Â·"; kbtn.TextColor3=WHITE
+        TweenService:Create(ks,TweenInfo.new(0.12),{Color=PURPLE}):Play()
+        lconnK=UIS.InputBegan:Connect(function(inp)
+            if not listening then return end
+            if inp.UserInputType~=Enum.UserInputType.Keyboard then return end
+            if inp.KeyCode==Enum.KeyCode.Escape then stopL(nil); return end; stopL(inp.KeyCode)
+        end)
+    end)
+    if keyName then keybindBtnRefs[keyName]=kbtn end; return kbtn
+end
+
+local function makeActionButton(label,bgColor,hoverColor,onClick)
+    local w=Instance.new("Frame",currentPage); w.Size=UDim2.new(1,0,0,24)
+    w.BackgroundTransparency=1; w.BorderSizePixel=0; w.LayoutOrder=LO()
+    local btn=Instance.new("TextButton",w); btn.Size=UDim2.new(1,-16,0,20)
+    btn.Position=UDim2.new(0,8,0,2); btn.BackgroundColor3=bgColor; btn.BorderSizePixel=0
+    btn.Text=label; btn.TextColor3=PURPLE_GLOW; btn.Font=Enum.Font.GothamBold; btn.TextSize=9; btn.ZIndex=5
+    mkCorner(btn,6); mkStroke(btn,PURPLE_BRD,1)
+    btn.MouseEnter:Connect(function() TweenService:Create(btn,TweenInfo.new(0.12),{BackgroundColor3=hoverColor}):Play() end)
+    btn.MouseLeave:Connect(function() TweenService:Create(btn,TweenInfo.new(0.12),{BackgroundColor3=bgColor}):Play() end)
+    btn.MouseButton1Click:Connect(onClick); return btn
+end
+
+-- ============================================================
+-- BUILD PAGES
+-- ============================================================
+local function buildPage(tabName,buildFn)
+    local page=Instance.new("ScrollingFrame",contentBg)
+    page.Name=tabName; page.Visible=(tabName=="Speed")
+    page.Size=UDim2.new(1,0,1,0); page.Position=UDim2.new(0,0,0,0)
+    page.BackgroundTransparency=1; page.BorderSizePixel=0
+    page.ScrollBarTh
